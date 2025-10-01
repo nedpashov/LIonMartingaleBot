@@ -7,11 +7,13 @@ import aiohttp
 from telegram import Bot
 from telegram.error import TelegramError
 import pytz
+from aiohttp import web
 
 # Конфигурация с твоите токени
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '8354673661:AAGaSRxyHa2WGFkyMjoTWg5qrC2Lxcf7s6M')
 TELEGRAM_CHANNEL_ID = os.getenv('TELEGRAM_CHANNEL_ID', '-1003114970901')
 API_FOOTBALL_KEY = os.getenv('API_FOOTBALL_KEY', '2589b526b382f3528eb485c95eac5080')
+PORT = int(os.getenv('PORT', 10000))
 
 # Настройки за мартингейл
 INITIAL_BET = 1.0  # 1 евро
@@ -386,7 +388,18 @@ class TelegramNotifier:
         except TelegramError as e:
             logger.error(f"Грешка при изпращане: {e}")
 
-async def main_loop():
+# Web server за Render
+async def health_check(request):
+    return web.Response(text="Bot is running! 🚀")
+
+async def status(request):
+    return web.json_response({
+        "status": "active",
+        "bot": "football-betting-bot",
+        "version": "1.0"
+    })
+
+async def bot_loop():
     """Основен цикъл на бота"""
     api = FootballAPI(API_FOOTBALL_KEY)
     selector = BetSelector(api)
@@ -451,7 +464,6 @@ async def main_loop():
                         processed_times.add(current_time)
                     else:
                         logger.warning("⚠️ Не е намерена подходяща комбинация в този момент")
-                        # Не добавяме в processed_times, за да опитаме отново по-късно
             
             # Изчакваме 30 секунди
             await asyncio.sleep(30)
@@ -460,5 +472,19 @@ async def main_loop():
             logger.error(f"❌ Грешка в главния цикъл: {e}")
             await asyncio.sleep(60)
 
+async def start_background_tasks(app):
+    app['bot_task'] = asyncio.create_task(bot_loop())
+
+async def cleanup_background_tasks(app):
+    app['bot_task'].cancel()
+    await app['bot_task']
+
 if __name__ == '__main__':
-    asyncio.run(main_loop())
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/status', status)
+    app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
+    
+    logger.info(f"🌐 Web server стартира на порт {PORT}")
+    web.run_app(app, host='0.0.0.0', port=PORT)
