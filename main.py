@@ -452,6 +452,41 @@ async def status(request):
         "next_bets": BET_TIMES
     })
 
+async def test_bet(request):
+    """Ръчен тест за залог - достъпен на /test"""
+    try:
+        api = FootballAPI(API_FOOTBALL_KEY)
+        selector = BetSelector(api)
+        notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID)
+        
+        logger.info("🧪 Тестов залог - търсене започва...")
+        await notifier.send_debug("🧪 Тестово търсене на залог...")
+        
+        combination = await selector.find_best_combination([])
+        
+        if combination:
+            await notifier.send_bet_notification(combination, 1.0, 999)
+            return web.json_response({
+                "success": True,
+                "message": "Намерена комбинация!",
+                "odd": combination['total_odd'],
+                "confidence": combination['avg_confidence']
+            })
+        else:
+            await notifier.send_debug("⚠️ Няма намерена комбинация при тест")
+            return web.json_response({
+                "success": False,
+                "message": "Няма намерена подходяща комбинация"
+            })
+    
+    except Exception as e:
+        logger.error(f"Грешка при тест: {e}")
+        logger.error(traceback.format_exc())
+        return web.json_response({
+            "success": False,
+            "error": str(e)
+        })
+
 # Self-ping за keepalive
 async def keep_alive():
     """Ping-ва себе си на всеки 10 минути за да остане активен"""
