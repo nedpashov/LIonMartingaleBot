@@ -169,11 +169,32 @@ class FootballAPI:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, headers=self.headers, params=params, 
                                           timeout=aiohttp.ClientTimeout(total=30)) as response:
+                        logger.info(f"API fixtures request for {date}: status {response.status}")
+                        
                         if response.status == 200:
                             data = await response.json()
-                            fixtures.extend(data.get('response', []))
+                            results = data.get('response', [])
+                            
+                            # DEBUG: Проверка на API response
+                            api_info = data.get('results', 0)
+                            logger.info(f"API returned {api_info} fixtures for {date}")
+                            
+                            # Проверка за API errors
+                            if 'errors' in data and data['errors']:
+                                logger.error(f"API errors: {data['errors']}")
+                            
+                            # Проверка за rate limit
+                            if 'requests' in data:
+                                logger.info(f"API quota: {data['requests']}")
+                            
+                            fixtures.extend(results)
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"API error {response.status}: {error_text}")
+                            
             except Exception as e:
-                logger.error(f"Error getting fixtures: {e}")
+                logger.error(f"Exception getting fixtures: {e}")
+                logger.error(traceback.format_exc())
         
         return fixtures
     
@@ -254,9 +275,14 @@ class AdvancedBetSelector:
         if excluded_ids is None:
             excluded_ids = []
         
-        logger.info("Smart search starting...")
+        logger.info("🔍 Smart search starting...")
         fixtures = await self.api.get_live_fixtures()
-        logger.info(f"Found {len(fixtures)} total fixtures")
+        logger.info(f"📊 Found {len(fixtures)} total fixtures from API")
+        
+        if len(fixtures) == 0:
+            logger.warning("⚠️ API returned 0 fixtures - possible rate limit or API issue")
+            logger.warning("💡 Tip: Free tier has 100 requests/day limit")
+            return None
         
         now = datetime.now(BG_TZ)
         future_fixtures = []
@@ -275,12 +301,15 @@ class AdvancedBetSelector:
                 
                 if 1 < hours_until < 24 and fixture['fixture']['id'] not in excluded_ids:
                     future_fixtures.append(fixture)
-            except:
+                    logger.info(f"  ✅ {fixture['teams']['home']['name']} vs {fixture['teams']['away']['name']} in {hours_until:.1f}h")
+            except Exception as e:
+                logger.error(f"Error filtering fixture: {e}")
                 continue
         
-        logger.info(f"Filtered {len(future_fixtures)} upcoming fixtures")
+        logger.info(f"🎯 Filtered {len(future_fixtures)} upcoming fixtures")
         
         if not future_fixtures:
+            logger.warning("⚠️ No upcoming fixtures found (all started or outside time range)")
             return None
         
         all_bet_options = []
@@ -293,24 +322,30 @@ class AdvancedBetSelector:
                 await asyncio.sleep(1.5)
                 
                 if not prediction:
+                    logger.info(f"  ⚠️ No predictions for fixture {fixture_id}")
                     continue
                 
                 odds_data = await self.api.get_odds(fixture_id)
                 await asyncio.sleep(1.5)
                 
                 if not odds_data:
+                    logger.info(f"  ⚠️ No odds for fixture {fixture_id}")
                     continue
                 
                 options = self._extract_all_bet_types(prediction, odds_data, fixture)
-                all_bet_options.extend(options)
+                if options:
+                    all_bet_options.extend(options)
+                    logger.info(f"  ✅ Found {len(options)} bet options")
                 
             except Exception as e:
-                logger.error(f"Analysis error: {e}")
+                logger.error(f"❌ Analysis error: {e}")
+                logger.error(traceback.format_exc())
                 continue
         
-        logger.info(f"Total {len(all_bet_options)} bet options found")
+        logger.info(f"📈 Total {len(all_bet_options)} bet options found")
         
         if not all_bet_options:
+            logger.warning("⚠️ No valid bet options found (low confidence or no data)")
             return None
         
         return self._find_best_combination(all_bet_options)
@@ -669,6 +704,14 @@ async def bot_loop():
     result_checker = ResultChecker(api, db)
     
     logger.info("Advanced Bot v2.0 Starting!")
+    
+    # Test API connection at start
+    try:
+        logger.info("Testing API connection...")
+        test_fixtures = await api.get_live_fixtures()
+        logger.info(f"✅ API test: {len(test_fixtures)} fixtures available")
+    except Exception as e:
+        logger.error(f"❌ API test failed: {e}")
     
     used_fixture_ids = []
     last_check_date = None
